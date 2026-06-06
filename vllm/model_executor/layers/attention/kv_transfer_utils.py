@@ -3,6 +3,7 @@
 import inspect
 from collections.abc import Callable
 from functools import wraps
+from typing import Any, TypeVar
 
 from vllm.distributed.kv_transfer import (
     get_kv_transfer_group,
@@ -10,6 +11,8 @@ from vllm.distributed.kv_transfer import (
     is_v1_kv_transfer_group,
 )
 from vllm.utils.torch_utils import _resolve_layer_name
+
+_T = TypeVar("_T")
 
 
 def maybe_transfer_kv_layer(func: Callable) -> Callable:
@@ -59,3 +62,37 @@ def maybe_transfer_kv_layer(func: Callable) -> Callable:
         return result
 
     return wrapper
+
+
+def maybe_transfer_kv_layer_by_name(
+    layer_name: str,
+    func: Callable[[], _T],
+    kv_cache_getter: Callable[[str], Any] | None = None,
+    attn_metadata_getter: Callable[[str], Any] | None = None,
+) -> _T:
+    """Trigger layer-wise KV transfer hooks around a layer operation.
+
+    This helper is for attention paths that do not use the generic attention
+    context shape expected by ``maybe_transfer_kv_layer``.
+    """
+    if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
+        return func()
+
+    connector = get_kv_transfer_group()
+    if not connector.has_connector_metadata():
+        return func()
+
+    layer_name = _resolve_layer_name(layer_name)
+    connector.wait_for_layer_load(layer_name)
+
+    result = func()
+
+    kv_cache = kv_cache_getter(layer_name) if kv_cache_getter is not None else None
+    attn_metadata = (
+        attn_metadata_getter(layer_name)
+        if attn_metadata_getter is not None
+        else None
+    )
+    connector.save_kv_layer(layer_name, kv_cache, attn_metadata)
+
+    return result

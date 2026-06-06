@@ -289,6 +289,10 @@ def test_splitting_ops_dynamic():
     assert config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
 
 
+def test_deepseek_v4_attention_is_piecewise_split_op():
+    assert "vllm::deepseek_v4_attention" in CompilationConfig._attention_ops
+
+
 def test_moe_splitting_ops_deepep_ht_inductor_partition():
     # Inductor partition case: user-provided splitting_ops should be
     # preserved and MoE ops should be appended for DeepEP HT with dp>1.

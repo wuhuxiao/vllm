@@ -48,6 +48,9 @@ from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import PluggableLayer
+from vllm.model_executor.layers.attention.kv_transfer_utils import (
+    maybe_transfer_kv_layer_by_name,
+)
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.model_executor.layers.deepseek_compressor import DeepseekCompressor
 from vllm.model_executor.layers.layernorm import LayerNorm, RMSNorm
@@ -565,7 +568,22 @@ def deepseek_v4_attention(
 ) -> None:
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
-    self.attention_impl(hidden_states, positions, out)
+    # This op is listed in CompilationConfig._attention_ops, so piecewise
+    # compilation keeps it outside captured non-attention subgraphs. That lets
+    # these Python KV-transfer hooks run around each layer graph replay.
+    def get_attn_metadata(layer_name: str) -> AttentionMetadata | None:
+        return (
+            forward_context.attn_metadata.get(layer_name)
+            if isinstance(forward_context.attn_metadata, dict)
+            else None
+        )
+
+    maybe_transfer_kv_layer_by_name(
+        self.swa_cache_layer.prefix,
+        lambda: self.attention_impl(hidden_states, positions, out),
+        lambda _layer_name: self.swa_cache_layer.kv_cache,
+        get_attn_metadata,
+    )
 
 
 def deepseek_v4_attention_fake(
